@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Debugging fragment for a kernel build used to validate lockless-nic-driver.
+# Merge the relevant symbols into a disposable debug kernel configuration.
+
+menu "Lockless NIC driver debugging"
+
+config LOCKLESS_NIC_DEBUG
+	bool "Enable lockless NIC debug validation"
+	default y
+	help
+	  Enables the configuration baseline recommended for reviewing the
+	  lock-free ring, RCU teardown, and NAPI ownership rules.
+
+config LOCKLESS_NIC_DEBUG_LOCKDEP
+	bool "Enable lock dependency validation"
+	depends on LOCKLESS_NIC_DEBUG
+	select LOCKDEP
+	select PROVE_LOCKING
+	default y
+
+config LOCKLESS_NIC_DEBUG_KCSAN
+	bool "Enable Kernel Concurrency Sanitizer"
+	depends on LOCKLESS_NIC_DEBUG
+	select KCSAN
+	default y
+
+config LOCKLESS_NIC_DEBUG_KASAN
+	bool "Enable Kernel Address Sanitizer"
+	depends on LOCKLESS_NIC_DEBUG
+	select KASAN
+	default y
+
+config LOCKLESS_NIC_DEBUG_RCU
+	bool "Enable aggressive RCU validation"
+	depends on LOCKLESS_NIC_DEBUG
+	select RCU_EXPERT
+	select RCU_TRACE
+	default y
+
+config LOCKLESS_NIC_DEBUG_INFO
+	bool "Keep rich debug information"
+	depends on LOCKLESS_NIC_DEBUG
+	select DEBUG_INFO
+	select FRAME_POINTER
+	default y
+
+endmenu

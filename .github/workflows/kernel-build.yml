@@ -1,0 +1,74 @@
+name: kernel-build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  userspace-and-scripts:
+    name: Userspace and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format gcc
+
+      - name: Compile and run SPSC stress test
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pthread \
+            tests/test_ring.c -o /tmp/lockless-ring-test
+          /tmp/lockless-ring-test
+
+      - name: Validate shell scripts
+        run: |
+          bash -n scripts/setup_netns.sh
+          bash -n scripts/test_throughput.sh
+
+      - name: Check C formatting
+        run: clang-format --dry-run --Werror src/lockless_nic.h src/*.c
+
+  kernel:
+    name: Linux ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - series: 5.x
+            version: 5.15.180
+          - series: 6.x
+            version: 6.1.112
+          - series: 6.x
+            version: 6.6.52
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libelf-dev \
+            libssl-dev cpio pahole xz-utils
+
+      - name: Download Linux ${{ matrix.version }}
+        run: |
+          curl --fail --location --retry 3 \
+            "https://cdn.kernel.org/pub/linux/kernel/v${{ matrix.series }}/linux-${{ matrix.version }}.tar.xz" \
+            --output "/tmp/linux-${{ matrix.version }}.tar.xz"
+          tar -C /tmp -xf "/tmp/linux-${{ matrix.version }}.tar.xz"
+
+      - name: Prepare kernel build tree
+        run: |
+          make -C "/tmp/linux-${{ matrix.version }}" defconfig
+          make -C "/tmp/linux-${{ matrix.version }}" modules_prepare
+
+      - name: Build lockless NIC module
+        run: |
+          make -C src KDIR="/tmp/linux-${{ matrix.version }}"

@@ -1,0 +1,17 @@
+# Kernel module build products
+*.ko
+*.o
+*.mod
+*.mod.c
+*.order
+*.symvers
+modules.order
+Module.symvers
+.tmp_versions/
+
+# Local benchmark and editor artifacts
+*.log
+*.jsonl
+.vscode/
+.idea/
+compile_commands.json
