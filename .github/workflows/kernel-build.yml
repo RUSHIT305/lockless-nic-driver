@@ -30,6 +30,7 @@ jobs:
         run: |
           bash -n scripts/setup_netns.sh
           bash -n scripts/test_throughput.sh
+          bash -n scripts/production_gate.sh
 
       - name: Check C formatting
         run: clang-format --dry-run --Werror src/lockless_nic.h src/*.c
@@ -71,4 +72,4 @@ jobs:
 
       - name: Build lockless NIC module
         run: |
-          make -C src KDIR="/tmp/linux-${{ matrix.version }}" KBUILD_MODPOST_WARN=1
+          make -C src KDIR="/tmp/linux-${{ matrix.version }}" W=1 KBUILD_MODPOST_WARN=1

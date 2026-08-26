@@ -17,6 +17,7 @@
 #define LNIC_MAX_MTU 9000
 #define LNIC_DEFAULT_ORDER 12
 #define LNIC_MAX_ORDER 20
+#define LNIC_TX_BATCH 256
 
 /* One cache line per producer/consumer cursor reduces false sharing. */
 struct lnic_ring {
@@ -44,6 +45,7 @@ struct lnic_stats {
 	u64 ring_full;
 	u64 napi_polls;
 	u64 napi_budget_exhausted;
+	u64 tx_timeouts;
 };
 
 struct lnic_priv {
@@ -65,7 +67,7 @@ bool lnic_ring_enqueue(struct lnic_ring *ring, struct sk_buff *skb);
 struct sk_buff *lnic_ring_dequeue(struct lnic_ring *ring);
 unsigned int lnic_ring_count(const struct lnic_ring *ring);
 
-void lnic_stats_tx_drop(struct lnic_priv *priv, bool full);
+void lnic_stats_tx_drop(struct lnic_priv *priv);
 void lnic_stats_ring_full(struct lnic_priv *priv);
 void lnic_stats_rx(struct lnic_priv *priv, unsigned int bytes);
 void lnic_stats_rx_drop(struct lnic_priv *priv);

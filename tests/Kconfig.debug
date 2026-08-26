@@ -23,6 +23,8 @@ config LOCKLESS_NIC_DEBUG_KCSAN
 	bool "Enable Kernel Concurrency Sanitizer"
 	depends on LOCKLESS_NIC_DEBUG
 	select KCSAN
+	select KCSAN_STRICT
+	select KCSAN_WEAK_MEMORY
 	default y
 
 config LOCKLESS_NIC_DEBUG_KASAN
@@ -36,7 +38,19 @@ config LOCKLESS_NIC_DEBUG_RCU
 	depends on LOCKLESS_NIC_DEBUG
 	select RCU_EXPERT
 	select RCU_TRACE
+	select DEBUG_OBJECTS_RCU_HEAD
 	default y
+
+config LOCKLESS_NIC_RELEASE_SIGNING
+	bool "Require signed modules for release-kernel validation"
+	depends on LOCKLESS_NIC_DEBUG
+	select MODULE_SIG
+	select MODULE_SIG_ALL
+	select MODULE_SIG_FORCE
+	default n
+	help
+	  Require all loadable modules to carry a valid signature. Use only with
+	  a trusted build pipeline and a target kernel keyring policy.
 
 config LOCKLESS_NIC_DEBUG_INFO
 	bool "Keep rich debug information"

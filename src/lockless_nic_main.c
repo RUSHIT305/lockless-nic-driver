@@ -2,6 +2,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
@@ -28,14 +29,12 @@ static void lnic_stats_tx(struct lnic_priv *priv, unsigned int bytes)
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
 }
 
-void lnic_stats_tx_drop(struct lnic_priv *priv, bool full)
+void lnic_stats_tx_drop(struct lnic_priv *priv)
 {
 	unsigned long flags;
 
 	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.tx_dropped++;
-	if (full)
-		priv->stats.ring_full++;
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
 }
 
@@ -45,6 +44,15 @@ void lnic_stats_ring_full(struct lnic_priv *priv)
 
 	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.ring_full++;
+	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
+}
+
+static void lnic_stats_tx_timeout(struct lnic_priv *priv)
+{
+	unsigned long flags;
+
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
+	priv->stats.tx_timeouts++;
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
 }
 
@@ -84,7 +92,7 @@ static netdev_tx_t lnic_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	unsigned int len = skb->len;
 
 	if (unlikely(!atomic_read(&priv->running))) {
-		lnic_stats_tx_drop(priv, false);
+		lnic_stats_tx_drop(priv);
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
@@ -96,18 +104,20 @@ static netdev_tx_t lnic_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	lnic_stats_tx(priv, len);
-	if (napi_schedule_prep(&priv->napi))
-		__napi_schedule(&priv->napi);
+	napi_schedule(&priv->napi);
 	return NETDEV_TX_OK;
 }
 
-static void lnic_process_tx(struct lnic_priv *priv, bool mirror)
+static bool lnic_process_tx(struct lnic_priv *priv, bool mirror)
 {
 	struct sk_buff *skb;
+	unsigned int processed = 0;
 	bool drained = false;
 
-	while ((skb = lnic_ring_dequeue(&priv->tx_ring))) {
+	while (processed < LNIC_TX_BATCH &&
+	       (skb = lnic_ring_dequeue(&priv->tx_ring))) {
 		drained = true;
+		processed++;
 		if (mirror) {
 			if (unlikely(!lnic_ring_enqueue(&priv->rx_ring, skb))) {
 				lnic_stats_rx_drop(priv);
@@ -119,6 +129,7 @@ static void lnic_process_tx(struct lnic_priv *priv, bool mirror)
 	}
 	if (drained)
 		netif_wake_queue(priv->netdev);
+	return lnic_ring_count(&priv->tx_ring) != 0;
 }
 
 static int lnic_poll(struct napi_struct *napi, int budget)
@@ -127,6 +138,7 @@ static int lnic_poll(struct napi_struct *napi, int budget)
 	struct lnic_config *cfg;
 	struct sk_buff *skb;
 	bool mirror = false;
+	bool tx_pending;
 	int work_done = 0;
 
 	/* Copy the read-mostly policy, then leave RCU before packet processing.
@@ -135,7 +147,7 @@ static int lnic_poll(struct napi_struct *napi, int budget)
 	cfg = rcu_dereference(priv->config);
 	mirror = cfg && READ_ONCE(cfg->loopback);
 	rcu_read_unlock();
-	lnic_process_tx(priv, mirror);
+	tx_pending = lnic_process_tx(priv, mirror);
 
 	while (work_done < budget) {
 		skb = lnic_ring_dequeue(&priv->rx_ring);
@@ -152,10 +164,9 @@ static int lnic_poll(struct napi_struct *napi, int budget)
 	lnic_stats_poll(priv, work_done == budget);
 	if (work_done < budget) {
 		napi_complete_done(napi, work_done);
-		if ((lnic_ring_count(&priv->tx_ring) ||
-		     lnic_ring_count(&priv->rx_ring)) &&
-		    napi_schedule_prep(napi))
-			__napi_schedule(napi);
+		if (tx_pending || lnic_ring_count(&priv->rx_ring))
+
+			napi_schedule(napi);
 	}
 
 	return work_done;
@@ -167,6 +178,7 @@ static int lnic_open(struct net_device *dev)
 
 	atomic_set(&priv->running, 1);
 	napi_enable(&priv->napi);
+	netif_carrier_on(dev);
 	netif_start_queue(dev);
 	return 0;
 }
@@ -176,6 +188,7 @@ static int lnic_stop(struct net_device *dev)
 	struct lnic_priv *priv = netdev_priv(dev);
 
 	netif_stop_queue(dev);
+	netif_carrier_off(dev);
 	atomic_set(&priv->running, 0);
 	napi_disable(&priv->napi);
 	lnic_ring_purge(&priv->tx_ring);
@@ -209,10 +222,83 @@ static void lnic_get_stats64(struct net_device *dev,
 	} while (u64_stats_fetch_retry(&priv->stats_sync, start));
 }
 
+static const char lnic_stat_names[][ETH_GSTRING_LEN] = {
+
+    "tx_packets",
+    "tx_bytes",
+    "tx_dropped",
+    "rx_packets",
+    "rx_bytes",
+    "rx_dropped",
+    "ring_full",
+    "napi_polls",
+    "napi_budget_exhausted",
+    "tx_timeouts",
+};
+
+static void lnic_get_drvinfo(struct net_device *dev,
+			     struct ethtool_drvinfo *info)
+{
+	strscpy(info->driver, LNIC_DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, LNIC_DRV_VERSION, sizeof(info->version));
+}
+
+static void lnic_get_strings(struct net_device *dev, u32 sset, u8 *data)
+{
+	if (sset == ETH_SS_STATS)
+		memcpy(data, lnic_stat_names, sizeof(lnic_stat_names));
+}
+
+static int lnic_get_sset_count(struct net_device *dev, int sset)
+{
+	if (sset == ETH_SS_STATS)
+		return ARRAY_SIZE(lnic_stat_names);
+	return -EOPNOTSUPP;
+}
+
+static void lnic_get_ethtool_stats(struct net_device *dev,
+				   struct ethtool_stats *stats,
+				   u64 *data)
+{
+	struct lnic_priv *priv = netdev_priv(dev);
+	unsigned int start;
+
+	do {
+		start = u64_stats_fetch_begin(&priv->stats_sync);
+		data[0] = priv->stats.tx_packets;
+		data[1] = priv->stats.tx_bytes;
+		data[2] = priv->stats.tx_dropped;
+		data[3] = priv->stats.rx_packets;
+		data[4] = priv->stats.rx_bytes;
+		data[5] = priv->stats.rx_dropped;
+		data[6] = priv->stats.ring_full;
+		data[7] = priv->stats.napi_polls;
+		data[8] = priv->stats.napi_budget_exhausted;
+		data[9] = priv->stats.tx_timeouts;
+	} while (u64_stats_fetch_retry(&priv->stats_sync, start));
+}
+
+static const struct ethtool_ops lnic_ethtool_ops = {
+    .get_drvinfo = lnic_get_drvinfo,
+    .get_strings = lnic_get_strings,
+    .get_sset_count = lnic_get_sset_count,
+    .get_ethtool_stats = lnic_get_ethtool_stats,
+};
+
+static void lnic_tx_timeout(struct net_device *dev, unsigned int txqueue)
+{
+	struct lnic_priv *priv = netdev_priv(dev);
+
+	(void)txqueue;
+	lnic_stats_tx_timeout(priv);
+	napi_schedule(&priv->napi);
+}
+
 static const struct net_device_ops lnic_netdev_ops = {
     .ndo_open = lnic_open,
     .ndo_stop = lnic_stop,
     .ndo_start_xmit = lnic_start_xmit,
+    .ndo_tx_timeout = lnic_tx_timeout,
     .ndo_change_mtu = lnic_change_mtu,
     .ndo_get_stats64 = lnic_get_stats64,
 };
@@ -221,12 +307,15 @@ static void lnic_setup(struct net_device *dev)
 {
 	ether_setup(dev);
 	dev->netdev_ops = &lnic_netdev_ops;
+	dev->ethtool_ops = &lnic_ethtool_ops;
 	dev->needs_free_netdev = true;
 	dev->min_mtu = LNIC_MIN_MTU;
 	dev->max_mtu = LNIC_MAX_MTU;
 	dev->mtu = LNIC_DEFAULT_MTU;
 	dev->tx_queue_len = 256;
-	dev->features |= NETIF_F_SG | NETIF_F_HW_CSUM;
+	dev->watchdog_timeo = 5 * HZ;
+	/* Do not advertise checksum or scatter-gather offloads we do not
+	 * implement. */
 	eth_hw_addr_random(dev);
 }
 

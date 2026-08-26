@@ -1,8 +1,8 @@
 # lockless-nic-driver
 
-A professional Linux kernel networking project that implements a **virtual `net_device`** with a lock-less packet datapath. The driver is designed as a concurrency study and interview-grade reference for **NAPI polling**, **RCU-protected configuration**, **cacheline-aware state**, **single-producer/single-consumer ring buffers**, and explicit **acquire/release memory ordering**.
+An enterprise-oriented Linux kernel networking project that implements a **virtual `net_device`** with a lock-less packet datapath. The driver is structured as a production-grade baseline for **NAPI polling**, **RCU-protected configuration**, **cacheline-aware state**, **single-producer/single-consumer ring buffers**, explicit **acquire/release memory ordering**, bounded backpressure, ethtool observability, and controlled teardown.
 
-> This is an educational kernel-module project. Load it only on an isolated development machine or disposable virtual machine. It is not a production hardware driver.
+> Production use still requires the target-kernel release gate, signed artifacts, live load/unload testing, stress testing, and operational approval described below. Never load an unsigned or unreviewed kernel module on a production host.
 
 ## Core objectives
 
@@ -23,7 +23,9 @@ lockless-nic-driver/
 │   └── Makefile               # Standard external-module kbuild file
 ├── scripts/                   # Performance and verification tools
 │   ├── setup_netns.sh         # Isolated namespace and veth setup
-│   └── test_throughput.sh     # iperf3 or kernel pktgen benchmark
+│   ├── test_throughput.sh     # iperf3 or kernel pktgen benchmark
+│   ├── sign_module.sh         # Target-kernel module signing helper
+│   └── production_gate.sh     # Exact-kernel release and signing gate
 ├── tests/                     # Safety and validation files
 │   ├── Kconfig.debug          # Lockdep/KCSAN/KASAN/RCU debug fragment
 │   └── test_ring.c            # Dependency-free C11 SPSC stress test
@@ -49,9 +51,9 @@ flowchart LR
 | **Lock-less queueing** | Bounded SPSC ring with monotonic cursors | One writer owns `head`; one writer owns `tail` |
 | **Memory ordering** | `smp_store_release()` and `smp_load_acquire()` | Cursor publication happens after slot initialization |
 | **RCU** | `rcu_dereference()` and `synchronize_rcu()` | A configuration object is freed only after readers leave |
-| **NAPI** | `netif_napi_add()`, `napi_schedule_prep()`, `napi_complete_done()` | Packet processing is batched and budgeted |
+| **NAPI** | `netif_napi_add()`, `napi_schedule()`, `napi_complete_done()` | Packet processing is batched and budgeted |
 | **Cache locality** | `____cacheline_aligned_in_smp` cursor fields | Producer and consumer cursor writes avoid false sharing |
-| **Statistics** | `u64_stats_sync` sequence protocol | Readers retry around concurrent counter updates |
+| **Statistics** | `u64_stats_sync` plus ethtool strings/stats | Operators can inspect packet, drop, ring, and poll counters |
 
 ### Ring ownership
 
@@ -79,6 +81,10 @@ make -C src KDIR=/lib/modules/$(uname -r)/build
 sudo insmod src/lockless_nic.ko ring_order=12 loopback=1
 ip link show lnic0
 sudo ip link set lnic0 up
+
+# Inspect driver and enterprise counters
+sudo ethtool -i lnic0
+sudo ethtool -S lnic0
 ```
 
 Unload the module with:
@@ -124,6 +130,29 @@ sudo MODE=pktgen IFACE=lnic0 PACKETS=1000000 PKT_SIZE=64 \
 
 The helper prints `ip -s link` counters before and after the test. It does not claim a throughput number when the selected traffic generator is unavailable; it exits with an actionable error instead.
 
+## Enterprise production release gate
+
+A release build must use the exact target kernel build tree and a complete `Module.symvers`. Run the gate from the repository root after configuring the target kernel’s module-signing policy:
+
+```bash
+KDIR=/lib/modules/$(uname -r)/build \
+MODULE=src/lockless_nic.ko \
+REQUIRE_SIGNATURE=1 \
+./scripts/production_gate.sh
+```
+
+The gate rejects missing target configuration, missing symbol-version data, warnings-as-errors failures, vermagic mismatches, and unsigned modules. The private signing key must remain in a secure build service or hardware-backed key store; it must never be committed to this repository. Sign the module with the target kernel’s `scripts/sign-file` helper:
+
+```bash
+KDIR=/lib/modules/$(uname -r)/build \
+SIGNING_KEY=/secure/keys/module.key \
+SIGNING_CERT=/secure/keys/module.x509 \
+MODULE=src/lockless_nic.ko \
+./scripts/sign_module.sh
+```
+
+Then rerun `production_gate.sh` with `REQUIRE_SIGNATURE=1` and verify with `modinfo` before installation. Linux module signing and enforcement are kernel policy controls, not repository-only features [5].
+
 ## Validation
 
 The user-space stress test validates the same SPSC acquire/release protocol without requiring kernel headers:
@@ -150,5 +179,8 @@ A production deployment must build against the exact target kernel’s prepared 
 [2]: https://docs.kernel.org/RCU/index.html "Linux kernel RCU Handbook"
 [3]: https://www.kernel.org/doc/Documentation/memory-barriers.txt "Linux kernel memory barriers documentation"
 [4]: https://docs.kernel.org/process/coding-style.html "Linux kernel coding style"
+[5]: https://www.kernel.org/doc/html/latest/admin-guide/module-signing.html "Linux kernel module signing facility"
+[6]: https://docs.kernel.org/dev-tools/kcsan.html "Linux Kernel Concurrency Sanitizer"
+[7]: https://docs.kernel.org/networking/index.html "Linux kernel networking documentation"
 
-The synchronization and lifecycle design follows the official Linux kernel documentation for NAPI [1], RCU [2], memory barriers [3], and coding style [4].
+The synchronization, lifecycle, security, and observability design follows the official Linux kernel documentation for NAPI [1], RCU [2], memory barriers [3], coding style [4], module signing [5], KCSAN [6], and networking APIs [7].

@@ -92,11 +92,29 @@ static void *consumer(void *arg)
 	return NULL;
 }
 
+static void test_boundaries(void)
+{
+	struct ring ring = { 0 };
+	struct packet packets[CAPACITY];
+	unsigned int i;
+
+	assert(dequeue(&ring) == NULL);
+	for (i = 0; i < CAPACITY; i++) {
+		packets[i].sequence = i;
+		assert(enqueue(&ring, &packets[i]));
+	}
+	assert(!enqueue(&ring, &packets[0]));
+	for (i = 0; i < CAPACITY; i++)
+		assert(dequeue(&ring) == &packets[i]);
+	assert(dequeue(&ring) == NULL);
+}
+
 int main(void)
 {
 	struct context ctx = { 0 };
 	pthread_t tx, rx;
 
+	test_boundaries();
 	assert(pthread_create(&tx, NULL, producer, &ctx) == 0);
 	assert(pthread_create(&rx, NULL, consumer, &ctx) == 0);
 	assert(pthread_join(tx, NULL) == 0);
