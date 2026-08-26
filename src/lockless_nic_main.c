@@ -22,7 +22,7 @@ static void lnic_stats_tx(struct lnic_priv *priv, unsigned int bytes)
 {
 	unsigned long flags;
 
-	u64_stats_update_begin_irqsave(&priv->stats_sync, flags);
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.tx_packets++;
 	priv->stats.tx_bytes += bytes;
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
@@ -32,10 +32,19 @@ void lnic_stats_tx_drop(struct lnic_priv *priv, bool full)
 {
 	unsigned long flags;
 
-	u64_stats_update_begin_irqsave(&priv->stats_sync, flags);
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.tx_dropped++;
 	if (full)
 		priv->stats.ring_full++;
+	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
+}
+
+void lnic_stats_ring_full(struct lnic_priv *priv)
+{
+	unsigned long flags;
+
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
+	priv->stats.ring_full++;
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
 }
 
@@ -43,7 +52,7 @@ void lnic_stats_rx(struct lnic_priv *priv, unsigned int bytes)
 {
 	unsigned long flags;
 
-	u64_stats_update_begin_irqsave(&priv->stats_sync, flags);
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.rx_packets++;
 	priv->stats.rx_bytes += bytes;
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
@@ -53,7 +62,7 @@ void lnic_stats_rx_drop(struct lnic_priv *priv)
 {
 	unsigned long flags;
 
-	u64_stats_update_begin_irqsave(&priv->stats_sync, flags);
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.rx_dropped++;
 	u64_stats_update_end_irqrestore(&priv->stats_sync, flags);
 }
@@ -62,7 +71,7 @@ static void lnic_stats_poll(struct lnic_priv *priv, bool exhausted)
 {
 	unsigned long flags;
 
-	u64_stats_update_begin_irqsave(&priv->stats_sync, flags);
+	flags = u64_stats_update_begin_irqsave(&priv->stats_sync);
 	priv->stats.napi_polls++;
 	if (exhausted)
 		priv->stats.napi_budget_exhausted++;
@@ -81,9 +90,9 @@ static netdev_tx_t lnic_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (unlikely(!lnic_ring_enqueue(&priv->tx_ring, skb))) {
-		lnic_stats_tx_drop(priv, true);
-		dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
+		lnic_stats_ring_full(priv);
+		netif_stop_queue(dev);
+		return NETDEV_TX_BUSY;
 	}
 
 	lnic_stats_tx(priv, len);
@@ -95,8 +104,10 @@ static netdev_tx_t lnic_start_xmit(struct sk_buff *skb, struct net_device *dev)
 static void lnic_process_tx(struct lnic_priv *priv, bool mirror)
 {
 	struct sk_buff *skb;
+	bool drained = false;
 
 	while ((skb = lnic_ring_dequeue(&priv->tx_ring))) {
+		drained = true;
 		if (mirror) {
 			if (unlikely(!lnic_ring_enqueue(&priv->rx_ring, skb))) {
 				lnic_stats_rx_drop(priv);
@@ -106,6 +117,8 @@ static void lnic_process_tx(struct lnic_priv *priv, bool mirror)
 			dev_kfree_skb_any(skb);
 		}
 	}
+	if (drained)
+		netif_wake_queue(priv->netdev);
 }
 
 static int lnic_poll(struct napi_struct *napi, int budget)
@@ -116,13 +129,13 @@ static int lnic_poll(struct napi_struct *napi, int budget)
 	bool mirror = false;
 	int work_done = 0;
 
-	/* The snapshot remains valid until the RCU read-side critical section
-	 * ends. */
+	/* Copy the read-mostly policy, then leave RCU before packet processing.
+	 */
 	rcu_read_lock();
 	cfg = rcu_dereference(priv->config);
-	mirror = cfg && cfg->loopback;
-	lnic_process_tx(priv, mirror);
+	mirror = cfg && READ_ONCE(cfg->loopback);
 	rcu_read_unlock();
+	lnic_process_tx(priv, mirror);
 
 	while (work_done < budget) {
 		skb = lnic_ring_dequeue(&priv->rx_ring);
@@ -165,6 +178,8 @@ static int lnic_stop(struct net_device *dev)
 	netif_stop_queue(dev);
 	atomic_set(&priv->running, 0);
 	napi_disable(&priv->napi);
+	lnic_ring_purge(&priv->tx_ring);
+	lnic_ring_purge(&priv->rx_ring);
 	return 0;
 }
 
@@ -210,9 +225,8 @@ static void lnic_setup(struct net_device *dev)
 	dev->min_mtu = LNIC_MIN_MTU;
 	dev->max_mtu = LNIC_MAX_MTU;
 	dev->mtu = LNIC_DEFAULT_MTU;
-	dev->tx_queue_len = 0;
+	dev->tx_queue_len = 256;
 	dev->features |= NETIF_F_SG | NETIF_F_HW_CSUM;
-	dev->priv_flags |= IFF_NO_QUEUE;
 	eth_hw_addr_random(dev);
 }
 
@@ -307,8 +321,8 @@ static void __exit lnic_exit(void)
 		return;
 
 	priv = netdev_priv(lnic_dev);
+	/* unregister_netdev() invokes ndo_stop when the interface is up. */
 	unregister_netdev(lnic_dev);
-	napi_disable(&priv->napi);
 	netif_napi_del(&priv->napi);
 	lnic_cleanup_priv(priv);
 	free_netdev(lnic_dev);

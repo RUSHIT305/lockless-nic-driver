@@ -60,11 +60,13 @@ struct lnic_priv {
 
 int lnic_ring_init(struct lnic_ring *ring, unsigned int order);
 void lnic_ring_destroy(struct lnic_ring *ring);
+void lnic_ring_purge(struct lnic_ring *ring);
 bool lnic_ring_enqueue(struct lnic_ring *ring, struct sk_buff *skb);
 struct sk_buff *lnic_ring_dequeue(struct lnic_ring *ring);
 unsigned int lnic_ring_count(const struct lnic_ring *ring);
 
 void lnic_stats_tx_drop(struct lnic_priv *priv, bool full);
+void lnic_stats_ring_full(struct lnic_priv *priv);
 void lnic_stats_rx(struct lnic_priv *priv, unsigned int bytes);
 void lnic_stats_rx_drop(struct lnic_priv *priv);
 

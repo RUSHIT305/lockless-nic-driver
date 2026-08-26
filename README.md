@@ -134,11 +134,15 @@ gcc -std=c11 -O2 -Wall -Wextra -Werror -pthread \
 /tmp/lockless-ring-test
 ```
 
-The CI workflow builds the module against Linux `5.15`, `6.1`, and `6.6` kernel trees, runs the C11 stress test, checks shell syntax, and validates formatting when the required tools are available. `tests/Kconfig.debug` documents a disposable debug-kernel baseline for Lockdep, KCSAN, KASAN, RCU tracing, frame pointers, and debug information.
+The CI workflow compiles and packages the module against Linux `5.15`, `6.1`, and `6.6` kernel trees, runs the C11 stress test, checks shell syntax, and validates formatting. Locally, the module compiled successfully against a prepared Ubuntu Linux 6.8 source tree, and sparse analysis completed successfully. The local build used `KBUILD_MODPOST_WARN=1` because the disposable source tree did not contain a full-kernel `Module.symvers`; that option is appropriate for source/API validation, not for a production release. Because CI prepares source trees rather than booting each kernel, module loading and live datapath testing must still be performed on a matching disposable kernel. `tests/Kconfig.debug` documents a disposable debug-kernel baseline for Lockdep, KCSAN, KASAN, RCU tracing, frame pointers, and debug information.
 
 ## Review checklist
 
 Before changing the datapath, verify that each ring still has exactly one producer and one consumer, that a slot is initialized before `head` is released, that a slot is cleared before `tail` is released, that RCU-protected objects outlive all readers, that NAPI is disabled before ring reclamation, and that every packet has a single owner through success and failure paths.
+
+## Production deployment gate
+
+A production deployment must build against the exact target kernel’s prepared build tree, matching configuration, compiler policy, and `Module.symvers`; it must then pass module-signature policy, `modinfo` vermagic checks, a disposable load/unload test, namespace traffic tests, and a sustained throughput run under the target kernel. This sandbox cannot honestly claim the final live-load gate because its running kernel is `6.18.38+` without matching headers, while the locally compiled artifact targets Linux 6.8. The module should therefore be treated as **source-validated and production-hardened in structure, but not production-certified until those target-kernel tests pass**.
 
 ## References
 

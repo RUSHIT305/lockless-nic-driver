@@ -71,4 +71,4 @@ jobs:
 
       - name: Build lockless NIC module
         run: |
-          make -C src KDIR="/tmp/linux-${{ matrix.version }}"
+          make -C src KDIR="/tmp/linux-${{ matrix.version }}" KBUILD_MODPOST_WARN=1

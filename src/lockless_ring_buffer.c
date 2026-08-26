@@ -45,6 +45,14 @@ void lnic_ring_destroy(struct lnic_ring *ring)
 	ring->slots = NULL;
 }
 
+void lnic_ring_purge(struct lnic_ring *ring)
+{
+	struct sk_buff *skb;
+
+	while ((skb = lnic_ring_dequeue(ring)))
+		kfree_skb(skb);
+}
+
 bool lnic_ring_enqueue(struct lnic_ring *ring, struct sk_buff *skb)
 {
 	u64 head, tail;
