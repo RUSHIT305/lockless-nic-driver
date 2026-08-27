@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include "lockless_nic.h"
 
@@ -376,7 +377,13 @@ static int __init lnic_init(void)
 
 	priv = netdev_priv(lnic_dev);
 	priv->netdev = lnic_dev;
+	/* Linux 5.15 exposes the four-argument form; newer kernels provide
+	 * the default-weight three-argument wrapper. */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+	netif_napi_add(lnic_dev, &priv->napi, lnic_poll, NAPI_POLL_WEIGHT);
+#else
 	netif_napi_add(lnic_dev, &priv->napi, lnic_poll);
+#endif
 
 	err = lnic_init_priv(priv);
 	if (err)
