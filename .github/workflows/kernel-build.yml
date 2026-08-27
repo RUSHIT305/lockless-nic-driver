@@ -65,12 +65,27 @@ jobs:
 
       - name: Download Linux ${{ matrix.version }}
         run: |
-          curl --fail --location --http1.1 \
-            --retry 8 --retry-all-errors --retry-delay 5 \
-            --connect-timeout 30 --max-time 1800 \
-            "https://cdn.kernel.org/pub/linux/kernel/v${{ matrix.series }}/linux-${{ matrix.version }}.tar.xz" \
-            --output "/tmp/linux-${{ matrix.version }}.tar.xz"
-          tar -C /tmp -xf "/tmp/linux-${{ matrix.version }}.tar.xz"
+          archive="/tmp/linux-${{ matrix.version }}.tar.xz"
+          url="https://cdn.kernel.org/pub/linux/kernel/v${{ matrix.series }}/linux-${{ matrix.version }}.tar.xz"
+          for attempt in {1..12}; do
+            if curl --fail --location --http1.1 --continue-at - \
+              --retry 3 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 30 --max-time 1800 \
+              "$url" --output "$archive"; then
+              break
+            fi
+            if tar -tJf "$archive" >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" -eq 12 ]]; then
+              echo "kernel source download failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "partial download; resuming in 10 seconds (attempt $attempt/12)"
+            sleep 10
+          done
+          tar -tJf "$archive" >/dev/null
+          tar -C /tmp -xf "$archive"
 
       - name: Prepare kernel build tree
         run: |
