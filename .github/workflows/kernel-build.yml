@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - series: 5.x
@@ -64,7 +65,9 @@ jobs:
 
       - name: Download Linux ${{ matrix.version }}
         run: |
-          curl --fail --location --retry 3 \
+          curl --fail --location --http1.1 \
+            --retry 8 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 30 --max-time 1800 \
             "https://cdn.kernel.org/pub/linux/kernel/v${{ matrix.series }}/linux-${{ matrix.version }}.tar.xz" \
             --output "/tmp/linux-${{ matrix.version }}.tar.xz"
           tar -C /tmp -xf "/tmp/linux-${{ matrix.version }}.tar.xz"
