@@ -35,67 +35,65 @@ jobs:
           bash -n scripts/setup_netns.sh
           bash -n scripts/test_throughput.sh
           bash -n scripts/production_gate.sh
+          bash -n scripts/sign_module.sh
 
       - name: Check C formatting
         run: clang-format --dry-run --Werror src/lockless_nic.h src/*.c
 
   kernel:
-    name: Linux ${{ matrix.version }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 3
       matrix:
         include:
-          - series: 5.x
-            version: 5.15.180
-          - series: 6.x
-            version: 6.1.112
-          - series: 6.x
-            version: 6.6.52
+          - name: Linux 5.15 baseline
+            image: ubuntu:22.04
+            headers: linux-headers-generic
+          - name: Linux 6.1 baseline
+            image: debian:bookworm
+            headers: linux-headers-amd64
+          - name: Linux 6.8 baseline
+            image: ubuntu:24.04
+            headers: linux-headers-generic
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Install kernel build dependencies
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libelf-dev \
-            libssl-dev cpio pahole xz-utils sparse
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y build-essential bc bison flex libelf-dev \
+            libssl-dev pahole sparse clang-format kmod ${{ matrix.headers }}
 
-      - name: Download Linux ${{ matrix.version }}
+      - name: Locate target kernel build tree
+        shell: bash
         run: |
-          archive="/tmp/linux-${{ matrix.version }}.tar.xz"
-          url="https://cdn.kernel.org/pub/linux/kernel/v${{ matrix.series }}/linux-${{ matrix.version }}.tar.xz"
-          for attempt in {1..12}; do
-            if curl --fail --location --http1.1 --continue-at - \
-              --retry 3 --retry-all-errors --retry-delay 5 \
-              --connect-timeout 30 --max-time 1800 \
-              "$url" --output "$archive"; then
-              break
-            fi
-            if tar -tJf "$archive" >/dev/null 2>&1; then
-              break
-            fi
-            if [[ "$attempt" -eq 12 ]]; then
-              echo "kernel source download failed after $attempt attempts" >&2
-              exit 1
-            fi
-            echo "partial download; resuming in 10 seconds (attempt $attempt/12)"
-            sleep 10
-          done
-          tar -tJf "$archive" >/dev/null
-          tar -C /tmp -xf "$archive"
-
-      - name: Prepare kernel build tree
-        run: |
-          make -C "/tmp/linux-${{ matrix.version }}" defconfig
-          make -C "/tmp/linux-${{ matrix.version }}" modules_prepare
+          KDIR="$(find /usr/src -mindepth 1 -maxdepth 1 -type d \
+            \( -name '*-generic' -o -name '*-amd64' \) | sort | tail -n 1)"
+          test -n "$KDIR"
+          test -f "$KDIR/Makefile"
+          echo "KDIR=$KDIR" >> "$GITHUB_ENV"
+          echo "Using target kernel tree: $KDIR"
 
       - name: Build lockless NIC module
+        shell: bash
         run: |
-          make -C src KDIR="/tmp/linux-${{ matrix.version }}" W=1 KBUILD_MODPOST_WARN=1
+          make -C src KDIR="$KDIR" W=1 KBUILD_MODPOST_WARN=1
 
       - name: Run sparse static analysis
+        shell: bash
         run: |
-          make -C src check KDIR="/tmp/linux-${{ matrix.version }}" W=1 KBUILD_MODPOST_WARN=1
+          make -C src check KDIR="$KDIR" W=1 KBUILD_MODPOST_WARN=1
+
+      - name: Verify module metadata
+        shell: bash
+        run: |
+          test -f src/lockless_nic.ko
+          modinfo src/lockless_nic.ko | tee /tmp/lockless-nic-modinfo.txt
+          grep -q '^license:.*GPL' /tmp/lockless-nic-modinfo.txt
+          grep -q '^name:.*lockless_nic' /tmp/lockless-nic-modinfo.txt
